@@ -24,6 +24,9 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        extra_fields = getattr(record, "extra_fields", None)
+        if isinstance(extra_fields, dict):
+            payload.update(extra_fields)
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
@@ -36,19 +39,27 @@ def get_logger(name: str, config: AppConfig | None = None) -> logging.Logger:
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.INFO)
+    level = getattr(logging, cfg.logging.level, logging.INFO)
+    logger.setLevel(level)
     logger.propagate = False
-    formatter = JsonFormatter()
 
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    formatter: logging.Formatter = (
+        JsonFormatter()
+        if cfg.logging.json_format
+        else logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
 
-    log_file = cfg.paths.app_log_file
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    if cfg.logging.stdout:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+
+    if cfg.logging.file:
+        log_file = cfg.logging.app_log_file
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
     return logger
 
@@ -56,7 +67,7 @@ def get_logger(name: str, config: AppConfig | None = None) -> logging.Logger:
 @contextmanager
 def stage_timer(stage: str, log_path: Path | None = None) -> Iterator[dict[str, Any]]:
     """Measure stage latency in milliseconds and append a JSONL record."""
-    target_path = log_path if log_path is not None else get_config().paths.latency_log_file
+    target_path = log_path if log_path is not None else get_config().logging.latency_log_file
     record: dict[str, Any] = {"stage": stage}
     start = time.perf_counter()
     try:

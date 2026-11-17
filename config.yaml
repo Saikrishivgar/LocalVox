@@ -1,10 +1,10 @@
 models:
   vad: silero-vad
-  stt: mlx-community/whisper-large-v3-turbo
-  llm: qwen2.5:14b-instruct
+  stt: mlx-community/whisper-large-v3-turbo-8bit
+  llm: qwen3:8b
   ollama_base_url: http://127.0.0.1:11434
-  tts_en: kokoro-82m
-  tts_ta: piper-ta-IN
+  tts_en: kokoro-onnx
+  tts_ta: piper-ta_IN-rasa_female-medium
   embedding: BAAI/bge-m3
   qdrant_collection: study_notes
 
@@ -13,6 +13,7 @@ audio:
   channels: 1
   chunk_size: 512
   tts_sample_rate: 24000
+  piper_sample_rate: 22050
 
 thresholds:
   vad_speech_prob: 0.5
@@ -26,7 +27,98 @@ paths:
   data_dir: data
   qdrant_dir: data/qdrant
   models_dir: data/models
+  vad_models_dir: data/models/vad
+  stt_models_dir: data/models/stt
+  tts_models_dir: data/models/tts
   logs_dir: logs
   latency_log_file: logs/latency.jsonl
   app_log_file: logs/app.log
+  benchmarks_dir: docs
+  test_audio_dir: data/test_audio
+  tts_output_dir: data/tts_output
 
+vad:
+  model_name: silero-vad
+  backend: onnx
+  sample_rate: 16000
+  threshold: 0.5
+  min_speech_duration_ms: 250
+  min_silence_duration_ms: 400
+  speech_pad_ms: 30
+  window_size_samples: 512
+
+stt:
+  model_name: mlx-community/whisper-large-v3-turbo-8bit
+  local_model_path: data/models/stt/whisper-large-v3-turbo-8bit
+  candidate_models:
+    - data/models/stt/whisper-small-mlx
+    - data/models/stt/whisper-large-v3-turbo-8bit
+    - data/models/stt/whisper-large-v3-turbo
+  backend: mlx
+  device: mps
+  default_language: null
+  supported_languages:
+    - en
+    - ta
+  sample_rate: 16000
+  temperature: 0.0
+  condition_on_previous_text: false
+
+llm:
+  model_name: qwen3:8b
+  backend: ollama
+  base_url: http://127.0.0.1:11434
+  timeout_s: 120.0
+  temperature: 0.4
+  top_p: 0.9
+  max_tokens: 512
+  num_ctx: 8192
+  think: false
+  keep_alive: 10m
+  system_prompt: >-
+    You are LocalVox, a friendly, concise offline study assistant fluent in Tamil and English.
+
+tts:
+  default_backend: kokoro
+  default_language: en
+  output_dir: data/tts_output
+  kokoro:
+    model_name: kokoro-v1.0.onnx
+    model_path: data/models/tts/kokoro/kokoro-v1.0.onnx
+    voices_path: data/models/tts/kokoro/voices-v1.0.bin
+    default_voice: af_heart
+    lang_code: en-us
+    supported_languages:
+      - en
+      - en-us
+      - en-gb
+    sample_rate: 24000
+    speed: 1.0
+  piper:
+    en_model_name: en_US-lessac-medium
+    en_model_path: data/models/tts/piper/en_US-lessac-medium/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+    en_config_path: data/models/tts/piper/en_US-lessac-medium/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+    ta_model_name: ta_IN-rasa_female-medium
+    ta_model_path: data/models/tts/piper/ta_IN-rasa_female-medium/ta_IN-rasa_female-medium.onnx
+    ta_config_path: data/models/tts/piper/ta_IN-rasa_female-medium/ta_IN-rasa_female-medium.onnx.json
+    supported_languages:
+      - en
+      - ta
+    sample_rate: 22050
+    length_scale: 1.0
+
+benchmark:
+  hardware_name: Apple M5 MacBook Pro (24 GB Unified Memory)
+  output_json_file: docs/model_benchmarks.json
+  output_markdown_file: docs/model_benchmarks.md
+  warmup_runs: 1
+  benchmark_runs: 3
+  max_stage_latency_ms: 1500.0
+
+logging:
+  level: INFO
+  json_format: true
+  stdout: true
+  file: true
+  app_log_file: logs/app.log
+  latency_log_file: logs/latency.jsonl
