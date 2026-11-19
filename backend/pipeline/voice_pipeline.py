@@ -945,10 +945,22 @@ class VoicePipeline:
         utt_end_ts = speech_end_at if speech_end_at is not None else turn_start
         barge_in_active = self._config.pipeline.barge_in_enabled
 
+        if (
+            self._state.stop_event.is_set()
+            or self._state.state == PipelineState.STOPPING
+        ):
+            self._logger.info("Pipeline stop signaled before STT processing; dropping utterance.")
+            return None
+
         if not barge_in_active and hasattr(self._capture, "pause"):
             self._capture.pause()
 
         with self._execution_lock:
+            if (
+                self._state.stop_event.is_set()
+                or self._state.state == PipelineState.STOPPING
+            ):
+                return None
             try:
                 latency_path = self._config.logging.latency_log_file
                 with stage_timer("pipeline_turn", log_path=latency_path) as rec:
@@ -1026,9 +1038,15 @@ class VoicePipeline:
 
         with self._execution_lock:
             was_stopped = self._state.stop_event.is_set()
-            if self._state.state in (PipelineState.IDLE, PipelineState.ERROR):
+            if self._state.state in (
+                PipelineState.IDLE,
+                PipelineState.ERROR,
+                PipelineState.STOPPING,
+            ):
                 self._state.stop_event.clear()
                 self._state.clear_barge_in()
+                if self._state.state == PipelineState.STOPPING:
+                    self._state.transition(PipelineState.IDLE, "text_input_prepared")
             try:
                 if self._on_transcript is not None:
                     self._on_transcript(transcript, language)
@@ -1297,7 +1315,11 @@ class VoicePipeline:
         speech_end_at = time.perf_counter()
         if not self._config.pipeline.barge_in_enabled and hasattr(self._capture, "pause"):
             self._capture.pause()
-        if captured is None:
+        if (
+            captured is None
+            or self._state.stop_event.is_set()
+            or self._state.state == PipelineState.STOPPING
+        ):
             return None
         utterance, vad_ms = captured
         return self.process_utterance(
