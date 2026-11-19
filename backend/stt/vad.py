@@ -110,6 +110,33 @@ class SileroVadDetector:
         )
         return self._load_time_ms
 
+    def reset_states(self) -> None:
+        """Reset streaming VAD hidden states between utterances or sessions."""
+        if self._model is not None and hasattr(self._model, "reset_states"):
+            self._model.reset_states()
+
+    def predict_chunk(self, chunk: np.ndarray, sample_rate: int | None = None) -> float:
+        """Return speech probability in [0, 1] for a single 512/256-sample mono frame."""
+        target_sr = sample_rate if sample_rate is not None else self._vad_cfg.sample_rate
+        if target_sr not in (8000, 16000):
+            raise ValueError(f"Silero VAD requires 8000 or 16000 Hz sample rate, got {target_sr}")
+
+        expected_samples = 512 if target_sr == 16000 else 256
+        waveform = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        if waveform.size != expected_samples:
+            raise ValueError(
+                f"Expected {expected_samples} samples for {target_sr} Hz VAD chunk, "
+                f"got {waveform.size}"
+            )
+        if not np.all(np.isfinite(waveform)):
+            raise ValueError("Audio chunk contains non-finite values.")
+
+        self.load()
+        assert self._model is not None
+        with torch.no_grad():
+            prob = self._model(torch.from_numpy(waveform), target_sr)
+        return float(prob.item())
+
     def detect(
         self,
         audio_path: Path | str,

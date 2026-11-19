@@ -1,13 +1,16 @@
 """MLX Whisper Speech-to-Text (STT) wrapper for LocalVox."""
 
 import json
+import math
 import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import soundfile as sf
 from pydantic import BaseModel, ConfigDict
+from scipy.signal import resample_poly
 
 from backend.config import AppConfig, get_config
 from backend.eval.benchmark import compute_rtf, get_disk_size_mb
@@ -173,17 +176,15 @@ class MlxWhisperStt:
         self._logger.info("MLX Whisper loaded (model=%s, load_ms=%.2f)", resolved.name, load_ms)
         return load_ms
 
-    def transcribe(
+    def _run_transcribe(
         self,
-        audio_path: Path | str,
+        audio_input: str | np.ndarray,
+        audio_duration_s: float,
         *,
         language: str | None = None,
         model_path: Path | str | None = None,
     ) -> SttResult:
-        """Transcribe a local audio file using MLX Whisper on Apple Silicon."""
-        audio_file = Path(audio_path)
-        audio_duration_s = probe_audio_duration_s(audio_file)
-
+        """Shared transcription path for local audio files and float32 arrays."""
         resolved_model = validate_local_model_dir(
             Path(model_path) if model_path is not None else self._stt_cfg.local_model_path
         )
@@ -206,7 +207,7 @@ class MlxWhisperStt:
 
         with stage_timer("stt", log_path=self._config.logging.latency_log_file) as rec:
             start = time.perf_counter()
-            raw: dict[str, Any] = mlx_whisper.transcribe(str(audio_file), **decode_kwargs)
+            raw: dict[str, Any] = mlx_whisper.transcribe(audio_input, **decode_kwargs)
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             rec["model"] = resolved_model.name
             rec["language"] = raw.get("language") or chosen_lang
@@ -233,4 +234,60 @@ class MlxWhisperStt:
             rtf=rtf,
             model_path=str(resolved_model),
             segments=list(raw.get("segments", [])),
+        )
+
+    def transcribe(
+        self,
+        audio_path: Path | str,
+        *,
+        language: str | None = None,
+        model_path: Path | str | None = None,
+    ) -> SttResult:
+        """Transcribe a local audio file using MLX Whisper on Apple Silicon."""
+        audio_file = Path(audio_path)
+        audio_duration_s = probe_audio_duration_s(audio_file)
+        return self._run_transcribe(
+            str(audio_file),
+            audio_duration_s,
+            language=language,
+            model_path=model_path,
+        )
+
+    def transcribe_array(
+        self,
+        waveform: np.ndarray,
+        sample_rate: int | None = None,
+        *,
+        language: str | None = None,
+        model_path: Path | str | None = None,
+    ) -> SttResult:
+        """Transcribe an in-memory float32 mono waveform without writing a file."""
+        target_sr = self._stt_cfg.sample_rate
+        source_sr = sample_rate if sample_rate is not None else target_sr
+        if source_sr <= 0:
+            raise ValueError(f"Sample rate must be positive, got {source_sr}")
+
+        audio = np.asarray(waveform, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1, dtype=np.float32)
+        audio = audio.reshape(-1)
+        if audio.size == 0:
+            raise ValueError("Waveform for STT transcription must not be empty.")
+        if not np.all(np.isfinite(audio)):
+            raise ValueError("Waveform contains non-finite values.")
+
+        audio_duration_s = float(audio.size / source_sr)
+        if source_sr != target_sr:
+            divisor = math.gcd(int(source_sr), int(target_sr))
+            audio = resample_poly(
+                audio,
+                up=int(target_sr) // divisor,
+                down=int(source_sr) // divisor,
+            ).astype(np.float32)
+
+        return self._run_transcribe(
+            audio,
+            audio_duration_s,
+            language=language,
+            model_path=model_path,
         )

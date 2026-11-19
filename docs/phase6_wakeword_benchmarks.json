@@ -1,0 +1,199 @@
+{
+  "hardware": "Apple M5 (24 GB Unified Memory)",
+  "disk_size_mb": 3.52,
+  "provider_comparison": {
+    "cpu": {
+      "active_provider": "CPUExecutionProvider",
+      "load_ms": 4.62,
+      "rss_delta_mb": 13.48,
+      "mean_infer_ms": 1.398,
+      "p50_infer_ms": 1.04,
+      "p95_infer_ms": 2.497
+    },
+    "coreml": {
+      "active_provider": "CoreMLExecutionProvider",
+      "load_ms": 389.88,
+      "rss_delta_mb": 17.6,
+      "mean_infer_ms": 2.406,
+      "p50_infer_ms": 2.315,
+      "p95_infer_ms": 2.697
+    }
+  },
+  "load_ms": 3.31,
+  "rss_before_mb": 296.34,
+  "rss_after_wakeword_mb": 333.84,
+  "rss_final_mb": 1228.98,
+  "standby_cpu_percent": 5.6,
+  "inference_mean_ms": 1.08,
+  "inference_p50_ms": 1.027,
+  "inference_p95_ms": 1.325,
+  "positive_total": 10,
+  "positive_detected": 10,
+  "missed_activations": 0,
+  "negative_total": 13,
+  "false_activations": 0,
+  "ack_first_synth_ms": 335.41,
+  "ack_audio_duration_ms": 1216.0,
+  "wake_to_listen_instant_ms": 2.58,
+  "wake_to_listen_with_cached_ack_ms": 1566.0,
+  "barge_in_detect_ms": 0.53,
+  "personalized_voice_benchmark": {
+    "samples_enrolled": 3,
+    "consistency_score": 0.9557,
+    "personal_threshold": 0.68,
+    "positive_detected": 3,
+    "positive_total": 3,
+    "negative_false_activations": 0,
+    "negative_total": 3
+  },
+  "e2e_comparison": {
+    "available": true,
+    "manual_stt_ms": 846.01,
+    "manual_llm_ttft_ms": 3162.02,
+    "manual_first_audio_ms": 4903.76,
+    "manual_response_latency_ms": 4887.95,
+    "wakeword_stt_ms": 729.4,
+    "wakeword_llm_ttft_ms": 420.54,
+    "wakeword_first_audio_ms": 2012.38,
+    "wakeword_response_latency_ms": 2001.39
+  },
+  "positive_details": [
+    {
+      "voice": "af_heart",
+      "text": "Hey Jarvis.",
+      "detected": true,
+      "peak_score": 0.9853,
+      "offset_from_speech_end_ms": -10.69
+    },
+    {
+      "voice": "af_bella",
+      "text": "Hey Jarvis!",
+      "detected": true,
+      "peak_score": 0.9936,
+      "offset_from_speech_end_ms": 64.0
+    },
+    {
+      "voice": "af_nicole",
+      "text": "Hey Jarvis.",
+      "detected": true,
+      "peak_score": 0.9737,
+      "offset_from_speech_end_ms": -224.0
+    },
+    {
+      "voice": "af_sarah",
+      "text": "Hey Jarvis.",
+      "detected": true,
+      "peak_score": 0.977,
+      "offset_from_speech_end_ms": -64.0
+    },
+    {
+      "voice": "am_adam",
+      "text": "Hey Jarvis.",
+      "detected": true,
+      "peak_score": 0.992,
+      "offset_from_speech_end_ms": 74.62
+    },
+    {
+      "voice": "am_michael",
+      "text": "Hey Jarvis!",
+      "detected": true,
+      "peak_score": 0.9945,
+      "offset_from_speech_end_ms": -53.38
+    },
+    {
+      "voice": "bf_emma",
+      "text": "Hey Jarvis.",
+      "detected": true,
+      "peak_score": 0.9868,
+      "offset_from_speech_end_ms": -53.38
+    },
+    {
+      "voice": "bm_george",
+      "text": "Hey Jarvis.",
+      "detected": true,
+      "peak_score": 0.987,
+      "offset_from_speech_end_ms": -138.69
+    },
+    {
+      "voice": "af_heart",
+      "text": "Hey Jarvis, what projects am I working on?",
+      "detected": true,
+      "peak_score": 0.9951,
+      "offset_from_speech_end_ms": -1568.0
+    },
+    {
+      "voice": "am_adam",
+      "text": "Hey Jarvis, tell me about my memories.",
+      "detected": true,
+      "peak_score": 0.9932,
+      "offset_from_speech_end_ms": -1184.0
+    }
+  ],
+  "negative_details": [
+    {
+      "label": "Hello computer.",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Hey Siri, set a timer for five minutes.",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Okay Google, what is the weather?",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "What projects am I working on?",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Remember that my exam is on Friday.",
+      "false_activation": false,
+      "peak_score": 0.0002
+    },
+    {
+      "label": "Good morning everyone.",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Have you seen my headphones?",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Please explain neural networks briefly.",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Let us continue working on Python.",
+      "false_activation": false,
+      "peak_score": 0.0001
+    },
+    {
+      "label": "Jarvis is a cool name in movies.",
+      "false_activation": false,
+      "peak_score": 0.3202
+    },
+    {
+      "label": "tamil_speech",
+      "false_activation": false,
+      "peak_score": 0.0021
+    },
+    {
+      "label": "white_noise_rms_0.02",
+      "false_activation": false,
+      "peak_score": 0.0492
+    },
+    {
+      "label": "silence_3s",
+      "false_activation": false,
+      "peak_score": 0.0001
+    }
+  ]
+}

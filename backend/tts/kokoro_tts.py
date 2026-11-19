@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import soundfile as sf
 from kokoro_onnx import Kokoro
 
@@ -62,16 +63,15 @@ class KokoroTtsEngine:
         assert self._engine is not None
         return list(self._engine.get_voices())
 
-    def synthesize(
+    def synthesize_array(
         self,
         text: str,
-        output_path: Path | str,
         *,
         language: str = "en",
         voice: str | None = None,
         speed: float | None = None,
-    ) -> TtsResult:
-        """Synthesize speech to a WAV file using local Kokoro ONNX."""
+    ) -> tuple[np.ndarray, int, TtsResult]:
+        """Synthesize speech in memory and return (waveform, sample_rate, TtsResult)."""
         if not text.strip():
             raise ValueError("Input text for TTS synthesis must not be empty.")
 
@@ -94,8 +94,6 @@ class KokoroTtsEngine:
 
         chosen_speed = speed if speed is not None else self._kokoro_cfg.speed
         kokoro_lang = _KOKORO_LANG_MAP[norm_lang]
-        out_file = Path(output_path)
-        out_file.parent.mkdir(parents=True, exist_ok=True)
 
         with stage_timer("tts_kokoro", log_path=self._config.logging.latency_log_file) as rec:
             audio, sample_rate = self._engine.create(
@@ -104,17 +102,16 @@ class KokoroTtsEngine:
                 speed=chosen_speed,
                 lang=kokoro_lang,
             )
-            sf.write(str(out_file), audio, sample_rate)
             rec["model"] = self._kokoro_cfg.model_name
             rec["voice"] = chosen_voice
             rec["language"] = norm_lang
 
-        processing_ms = float(rec["latency_ms"])
-        info = sf.info(str(out_file))
-        if info.frames <= 0:
-            raise RuntimeError(f"Kokoro generated an empty WAV file: {out_file}")
+        waveform = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if waveform.size == 0:
+            raise RuntimeError("Kokoro generated empty audio.")
 
-        audio_duration_s = float(info.duration)
+        processing_ms = float(rec["latency_ms"])
+        audio_duration_s = float(waveform.size / sample_rate)
         rtf = compute_rtf(processing_ms, audio_duration_s)
         self._logger.info(
             "Kokoro synthesis done (voice=%s, dur_s=%.2f, latency_ms=%.2f, rtf=%s)",
@@ -123,15 +120,40 @@ class KokoroTtsEngine:
             processing_ms,
             rtf,
         )
-        return TtsResult(
+        result = TtsResult(
             backend="kokoro",
             model_name=self._kokoro_cfg.model_name,
             voice=chosen_voice,
             language=norm_lang,
-            output_path=out_file,
+            output_path=None,
             sample_rate=sample_rate,
             audio_duration_s=round(audio_duration_s, 3),
             load_time_ms=round(load_ms, 2),
             processing_time_ms=round(processing_ms, 2),
             rtf=rtf,
         )
+        return waveform, sample_rate, result
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path | str,
+        *,
+        language: str = "en",
+        voice: str | None = None,
+        speed: float | None = None,
+    ) -> TtsResult:
+        """Synthesize speech to a WAV file using local Kokoro ONNX."""
+        waveform, sample_rate, result = self.synthesize_array(
+            text,
+            language=language,
+            voice=voice,
+            speed=speed,
+        )
+        out_file = Path(output_path)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(out_file), waveform, sample_rate)
+        info = sf.info(str(out_file))
+        if info.frames <= 0:
+            raise RuntimeError(f"Kokoro generated an empty WAV file: {out_file}")
+        return result.model_copy(update={"output_path": out_file})

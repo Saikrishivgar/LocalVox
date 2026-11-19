@@ -7,6 +7,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
 from backend.config import get_config
+from backend.wakeword.models import download_wakeword_models
 
 _KOKORO_RELEASE_BASE = (
     "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
@@ -73,7 +74,10 @@ def main() -> int:
             local_dir=str(piper_ta_dir),
         )
 
-    print("Phase 1 local model downloads complete.")
+    print(f"Downloading openWakeWord ONNX models -> {cfg.paths.wakeword_models_dir}")
+    download_wakeword_models(cfg.paths.wakeword_models_dir)
+
+    print("Local model downloads complete (STT, TTS, and openWakeWord ONNX).")
     return 0
 
 

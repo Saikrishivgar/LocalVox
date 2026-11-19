@@ -21,6 +21,7 @@ data/
 # Frontend
 node_modules/
 .next/
+*.tsbuildinfo
 
 # OS
 .DS_Store

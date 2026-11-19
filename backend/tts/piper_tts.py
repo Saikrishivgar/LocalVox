@@ -3,6 +3,7 @@
 import wave
 from pathlib import Path
 
+import numpy as np
 import soundfile as sf
 from piper import PiperVoice, SynthesisConfig
 
@@ -75,6 +76,64 @@ class PiperTtsEngine:
         self._logger.info("Piper voice loaded (model=%s, load_ms=%.2f)", model_name, load_ms)
         return load_ms
 
+    def synthesize_array(
+        self,
+        text: str,
+        *,
+        language: str = "en",
+        length_scale: float | None = None,
+    ) -> tuple[np.ndarray, int, TtsResult]:
+        """Synthesize speech in memory and return (waveform, sample_rate, TtsResult)."""
+        if not text.strip():
+            raise ValueError("Input text for TTS synthesis must not be empty.")
+
+        norm_lang = language.lower().strip()
+        load_ms = self.load(norm_lang)
+        model_name, _, _ = self._resolve_voice_paths(norm_lang)
+        voice = self._voices[norm_lang]
+        scale = length_scale if length_scale is not None else self._piper_cfg.length_scale
+        syn_cfg = SynthesisConfig(length_scale=scale)
+
+        audio_chunks: list[np.ndarray] = []
+        sample_rate = self._piper_cfg.sample_rate
+        with stage_timer("tts_piper", log_path=self._config.logging.latency_log_file) as rec:
+            for chunk in voice.synthesize(text, syn_config=syn_cfg):
+                audio_chunks.append(np.asarray(chunk.audio_float_array, dtype=np.float32))
+                sample_rate = int(chunk.sample_rate)
+            rec["model"] = model_name
+            rec["language"] = norm_lang
+
+        if not audio_chunks:
+            raise RuntimeError(f"Piper produced no audio chunks for model '{model_name}'.")
+        waveform = np.concatenate(audio_chunks).astype(np.float32)
+        if waveform.size == 0:
+            raise RuntimeError(f"Piper generated empty audio for model '{model_name}'.")
+
+        processing_ms = float(rec["latency_ms"])
+        audio_duration_s = float(waveform.size / sample_rate)
+        rtf = compute_rtf(processing_ms, audio_duration_s)
+        self._logger.info(
+            "Piper synthesis done (model=%s, lang=%s, dur_s=%.2f, latency_ms=%.2f, rtf=%s)",
+            model_name,
+            norm_lang,
+            audio_duration_s,
+            processing_ms,
+            rtf,
+        )
+        result = TtsResult(
+            backend="piper",
+            model_name=model_name,
+            voice=model_name,
+            language=norm_lang,
+            output_path=None,
+            sample_rate=sample_rate,
+            audio_duration_s=round(audio_duration_s, 3),
+            load_time_ms=round(load_ms, 2),
+            processing_time_ms=round(processing_ms, 2),
+            rtf=rtf,
+        )
+        return waveform, sample_rate, result
+
     def synthesize(
         self,
         text: str,
@@ -130,3 +189,4 @@ class PiperTtsEngine:
             processing_time_ms=round(processing_ms, 2),
             rtf=rtf,
         )
+

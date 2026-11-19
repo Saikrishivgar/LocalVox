@@ -1,7 +1,9 @@
 """Local Ollama LLM client and streaming benchmark metrics."""
 
 import json
+import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -41,6 +43,7 @@ class LlmResult(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     tokens_per_sec: float
+    cancelled: bool = False
 
 
 def _match_model_name(target: str, available_names: list[str]) -> str | None:
@@ -103,6 +106,30 @@ class OllamaClient:
                 return model
         return {"name": matched}
 
+    def warmup(self, model_name: str | None = None) -> None:
+        """Verify model exists locally and ask Ollama to keep it loaded in memory."""
+        target_model = model_name if model_name is not None else self._llm_cfg.model_name
+        self.verify_model_exists(target_model)
+        client = self._build_client()
+        should_close = self._external_client is None
+        try:
+            response = client.post(
+                "/api/chat",
+                json={
+                    "model": target_model,
+                    "messages": [],
+                    "keep_alive": self._llm_cfg.keep_alive,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise OllamaInferenceError(
+                f"Failed to warm up Ollama model '{target_model}': {exc}"
+            ) from exc
+        finally:
+            if should_close:
+                client.close()
+
     def get_running_memory_mb(self, model_name: str | None = None) -> float | None:
         """Return currently loaded model memory footprint in MiB from /api/ps."""
         target = model_name if model_name is not None else self._llm_cfg.model_name
@@ -135,9 +162,25 @@ class OllamaClient:
         think: bool | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        on_token: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> LlmResult:
         """Send a streaming local chat request and measure TTFT and token throughput."""
         target_model = model_name if model_name is not None else self._llm_cfg.model_name
+        if cancel_event is not None and cancel_event.is_set():
+            return LlmResult(
+                model_name=target_model,
+                response_text="",
+                thinking_text="",
+                ttft_ms=0.0,
+                total_time_ms=0.0,
+                load_duration_ms=None,
+                prompt_tokens=0,
+                completion_tokens=0,
+                tokens_per_sec=0.0,
+                cancelled=True,
+            )
+
         self.verify_model_exists(target_model)
 
         payload: dict[str, Any] = {
@@ -149,6 +192,7 @@ class OllamaClient:
             "options": {
                 "temperature": self._llm_cfg.temperature if temperature is None else temperature,
                 "top_p": self._llm_cfg.top_p,
+                "repeat_penalty": self._llm_cfg.repeat_penalty,
                 "num_predict": self._llm_cfg.max_tokens if max_tokens is None else max_tokens,
                 "num_ctx": self._llm_cfg.num_ctx,
             },
@@ -160,6 +204,7 @@ class OllamaClient:
         thinking_parts: list[str] = []
         ttft_ms: float | None = None
         final_chunk: dict[str, Any] = {}
+        cancelled = False
 
         try:
             with stage_timer("llm", log_path=self._config.logging.latency_log_file) as rec:
@@ -171,6 +216,9 @@ class OllamaClient:
                             f"Ollama returned HTTP {response.status_code}: {body}"
                         )
                     for raw_line in response.iter_lines():
+                        if cancel_event is not None and cancel_event.is_set():
+                            cancelled = True
+                            break
                         if not raw_line:
                             continue
                         chunk = json.loads(raw_line)
@@ -183,15 +231,25 @@ class OllamaClient:
                             ttft_ms = round((time.perf_counter() - start) * 1000.0, 2)
                         if content_delta:
                             content_parts.append(content_delta)
+                            if on_token is not None:
+                                on_token(content_delta)
+                        if cancel_event is not None and cancel_event.is_set():
+                            cancelled = True
+                            break
                         if thinking_delta:
                             thinking_parts.append(thinking_delta)
                         if chunk.get("done"):
                             final_chunk = chunk
                 rec["model"] = target_model
+                rec["cancelled"] = cancelled
 
             total_ms = float(rec["latency_ms"])
         except httpx.HTTPError as exc:
-            raise OllamaInferenceError(f"Ollama streaming request failed: {exc}") from exc
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                total_ms = 0.0
+            else:
+                raise OllamaInferenceError(f"Ollama streaming request failed: {exc}") from exc
         finally:
             if should_close:
                 client.close()
@@ -223,13 +281,16 @@ class OllamaClient:
             prompt_tokens=prompt_count,
             completion_tokens=eval_count,
             tokens_per_sec=tps,
+            cancelled=cancelled,
         )
         self._logger.info(
-            "LLM generation completed (model=%s, ttft_ms=%.1f, total_ms=%.1f, tok_s=%.1f)",
+            "LLM generation completed (model=%s, ttft_ms=%.1f, total_ms=%.1f, "
+            "tok_s=%.1f, cancelled=%s)",
             target_model,
             result.ttft_ms,
             result.total_time_ms,
             result.tokens_per_sec,
+            cancelled,
         )
         return result
 
@@ -241,6 +302,8 @@ class OllamaClient:
         model_name: str | None = None,
         think: bool | None = None,
         max_tokens: int | None = None,
+        on_token: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> LlmResult:
         """Run single-turn inference using the configured or overridden system prompt."""
         sys_msg = system_prompt if system_prompt is not None else self._llm_cfg.system_prompt
@@ -253,4 +316,7 @@ class OllamaClient:
             model_name=model_name,
             think=think,
             max_tokens=max_tokens,
+            on_token=on_token,
+            cancel_event=cancel_event,
         )
+

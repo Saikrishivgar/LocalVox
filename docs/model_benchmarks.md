@@ -140,3 +140,39 @@ When native Tamil and code-mixed `.wav` recordings are added under `data/test_au
 2. **Recommended STT**: `mlx-community/whisper-large-v3-turbo-8bit` (`824.43 MiB`, `~384–410 ms` warm latency, identical synthetic Tamil & English output to fp16 with ~900 MiB less peak RAM). Needs real human Tamil and Tanglish recordings to validate code-mixed accuracy and decide whether `language` auto-detection or explicit switching is required.
 3. **Recommended LLM**: `qwen3:8b` via local Ollama with `think=False` for low-latency voice responses (`TTFT ~188–491 ms`, `~24 tok/s`). In Phase 2, tighten the system prompt to forbid Markdown/emojis and match the user's Tamil/English register concisely.
 4. **Recommended TTS Architecture**: Dual-engine routing in Phase 2 — **Kokoro ONNX** (`af_heart`, `24 kHz`, `RTF 0.1703`) for natural English speech, and **Piper ONNX** (`ta_IN-rasa_female-medium`, `22.05 kHz`, `RTF 0.0201`) for Tamil speech, with an explicit check of community Tamil pronunciation acceptability (Piper Tamil uses eSpeak `ta` phonemization and showed minor syllable artifacts on round-trip STT).
+
+---
+
+## 9. Phase 2 End-to-End Pipeline Measurements
+
+Measured on `Apple M5 (24 GB Unified Memory)` with `HF_HUB_OFFLINE=1` using `VoicePipeline` (`Silero VAD ONNX` -> `whisper-large-v3-turbo-8bit` -> `Ollama qwen3:8b (think=False)` -> `Kokoro EN / Piper TA` -> `MacBook Pro Speakers`) fed with chunked `16 kHz` synthetic English & Tamil test WAVs:
+
+### Run A — With Ollama Model Warmup (`OllamaClient.warmup()`, Silent Playback Sink)
+
+| Turn | Language (Input -> TTS) | VAD (ms) | STT (ms) | LLM TTFT (ms) | LLM Total (ms) | Tok/s | TTS (ms) | Response Latency (ms) | Process RSS (MiB) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `en -> kokoro (en)` | 9.9 | 857.0 | 2,751.1 | 4,467.7 | 24.6 | 2,505.7 | 7,830.5 | 1,012.8 |
+| 2 | `en -> kokoro (en)` (follow-up) | 11.0 | 701.1 | 587.7 | 2,308.9 | 24.5 | 2,031.5 | 5,041.5 | 1,075.3 |
+| 3 | `ta (synthetic) -> piper (ta)` | 13.3 | 704.1 | 736.8 | 4,181.9 | 23.9 | 133.4 | 5,019.4 | 1,120.9 |
+
+### Run B — With Physical `SpeakerAudioPlayer` (`MacBook Pro Speakers`, Before `warmup()` Chat Preload)
+
+| Turn | Language (Input -> TTS) | VAD (ms) | STT (ms) | LLM TTFT (ms) | LLM Total (ms) | Tok/s | TTS (ms) | Playback (ms) | Response Latency (ms) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | `en -> kokoro (en)` (cold Ollama reload) | 11.8 | 800.0 | 9,333.5 | 11,259.8 | 23.9 | 2,457.7 | 13,265.5 | 14,517.5 |
+| 2 | `en -> kokoro (en)` (warm) | 25.2 | 751.9 | 950.8 | 2,877.6 | 22.4 | 1,855.3 | 11,298.0 | 5,484.8 |
+| 3 | `ta (synthetic) -> piper (ta)` (warm) | 25.4 | 759.3 | 739.7 | 4,197.1 | 23.8 | 138.6 | 4,376.1 | 5,095.0 |
+
+### Hardware & Real-Time Observations
+
+- **Audio Hardware & Half-Duplex Gating Verified (Phase 2.1)**:
+  - `MacBook Pro Microphone` (`16000 Hz`, 1 ch) captured `10` live pre-playback frames, gated cleanly during `506.56 ms` of live `MacBook Pro Speakers` playback (`read_chunk` returned `None`), and resumed capturing `10` live frames (`max_abs=0.0472`) without closing or reopening the CoreAudio stream.
+  - `scripts/voice_assistant.py` launched offline (`HF_HUB_OFFLINE=1`), warmed all models (`Silero VAD 28.89 ms`, `MLX Whisper 496.85 ms`, `Kokoro 259.75 ms`, `Piper TA 135.43 ms`), entered continuous `[LISTENING]`, and exited cleanly on `SIGINT` (`exit_code=0`).
+- **Updated Voice Prompt Check (`qwen3:8b`, `repeat_penalty=1.12`)**:
+  - English Turn 1 (`"Can you hear me?"`): TTFT `2,592.2 ms`, total `3,172.5 ms`, `25.8 tok/s` (concise plain text).
+  - English Turn 2 (`"What is osmosis?"`): TTFT `318.8 ms`, total `2,163.4 ms`, `24.5 tok/s` (direct answer, zero stock greeting repetition or emojis).
+  - Tanglish Turn 3 (`"Binary search எப்படி work ஆகுது nu short-ஆ சொல்லுங்க."`): TTFT `576.9 ms`, total `7,557.3 ms`, `24.0 tok/s` (2-sentence Tamil explanation, zero Markdown/emojis).
+- **Warmup Speedup**: Adding `OllamaClient.warmup()` cut Turn 1 LLM TTFT from `9,333.5 ms` down to `2,592–2,751 ms` (and subsequent turns to `318.8–736.8 ms`).
+- **Untested**: Live spoken human Tamil and Tanglish microphone accuracy remains unmeasured until genuine human recordings are spoken/tested.
+
+

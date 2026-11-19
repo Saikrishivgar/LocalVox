@@ -10,7 +10,7 @@ class UnsupportedLanguageError(ValueError):
 
 
 class TtsResult(BaseModel):
-    """Output metrics and artifact path from TTS synthesis."""
+    """Output metrics and optional artifact path from TTS synthesis."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -18,9 +18,10 @@ class TtsResult(BaseModel):
     model_name: str
     voice: str
     language: str
-    output_path: Path
+    output_path: Path | None = None
     sample_rate: int
     audio_duration_s: float
     load_time_ms: float
     processing_time_ms: float
     rtf: float | None
+
