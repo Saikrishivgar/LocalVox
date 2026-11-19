@@ -1,11 +1,15 @@
 """MLX Whisper Speech-to-Text (STT) wrapper for LocalVox."""
 
+import concurrent.futures
 import json
 import math
+import queue
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 import soundfile as sf
@@ -19,6 +23,60 @@ from backend.logger import get_logger, stage_timer
 if TYPE_CHECKING:
     import mlx.core as mx
     from mlx_whisper import whisper
+
+_T = TypeVar("_T")
+
+
+class _MlxThreadExecutor:
+    """Serialize all MLX GPU calls onto one persistent daemon thread.
+
+    MLX GPU streams are thread-affine (`Stream(gpu, tid)` is destroyed when a
+    short-lived thread exits). Pinning model loading and inference to one
+    long-lived thread prevents `There is no Stream(gpu, N) in current thread.`
+    errors across voice-loop restarts and concurrent API requests.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[tuple[Callable[[], Any], concurrent.futures.Future[Any]]] = (
+            queue.Queue()
+        )
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def _ensure_started(self) -> threading.Thread:
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._worker_loop,
+                    name="mlx-gpu-worker",
+                    daemon=True,
+                )
+                self._thread.start()
+            return self._thread
+
+    def _worker_loop(self) -> None:
+        while True:
+            fn, fut = self._queue.get()
+            try:
+                result = fn()
+            except BaseException as exc:
+                fut.set_exception(exc)
+            else:
+                fut.set_result(result)
+            finally:
+                self._queue.task_done()
+
+    def run(self, fn: Callable[[], _T]) -> _T:
+        """Execute `fn` synchronously on the dedicated MLX GPU worker thread."""
+        worker = self._ensure_started()
+        if threading.current_thread() is worker:
+            return fn()
+        fut: concurrent.futures.Future[_T] = concurrent.futures.Future()
+        self._queue.put((fn, fut))
+        return fut.result()
+
+
+_MLX_EXECUTOR = _MlxThreadExecutor()
 
 SUPPORTED_AUDIO_EXTENSIONS: frozenset[str] = frozenset(
     {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".aac", ".aiff", ".webm"}
@@ -134,7 +192,15 @@ def _load_whisper_into_holder(model_dir: Path, dtype: "mx.Dtype") -> "whisper.Wh
         nn.quantize(model, **quantization, class_predicate=predicate)
 
     model.update(tree_unflatten(list(weights.items())))
-    mx.eval(model.parameters())
+    eval_targets: list[Any] = [model.parameters()]
+    for buffer_attr in (
+        getattr(model.encoder, "_positional_embedding", None),
+        getattr(model.decoder, "_mask", None),
+        getattr(model, "alignment_heads", None),
+    ):
+        if buffer_attr is not None:
+            eval_targets.append(buffer_attr)
+    mx.eval(*eval_targets)
 
     ModelHolder.model = model
     ModelHolder.model_path = str(model_dir)
@@ -155,14 +221,10 @@ class MlxWhisperStt:
         target = Path(model_path) if model_path is not None else self._stt_cfg.local_model_path
         return get_disk_size_mb(target)
 
-    def load(self, model_path: Path | str | None = None) -> float:
-        """Load local MLX Whisper weights into memory without network calls."""
+    def _load_on_mlx_thread(self, resolved: Path) -> float:
         import mlx.core as mx
         from mlx_whisper.transcribe import ModelHolder
 
-        resolved = validate_local_model_dir(
-            Path(model_path) if model_path is not None else self._stt_cfg.local_model_path
-        )
         key = str(resolved)
         if ModelHolder.model is not None and ModelHolder.model_path == key:
             return self._load_times_ms.get(key, 0.0)
@@ -176,6 +238,13 @@ class MlxWhisperStt:
         self._logger.info("MLX Whisper loaded (model=%s, load_ms=%.2f)", resolved.name, load_ms)
         return load_ms
 
+    def load(self, model_path: Path | str | None = None) -> float:
+        """Load local MLX Whisper weights into memory without network calls."""
+        resolved = validate_local_model_dir(
+            Path(model_path) if model_path is not None else self._stt_cfg.local_model_path
+        )
+        return _MLX_EXECUTOR.run(lambda: self._load_on_mlx_thread(resolved))
+
     def _run_transcribe(
         self,
         audio_input: str | np.ndarray,
@@ -188,9 +257,6 @@ class MlxWhisperStt:
         resolved_model = validate_local_model_dir(
             Path(model_path) if model_path is not None else self._stt_cfg.local_model_path
         )
-        load_ms = self.load(resolved_model)
-
-        import mlx_whisper
 
         chosen_lang = language if language is not None else self._stt_cfg.default_language
         if chosen_lang in ("", "auto"):
@@ -205,12 +271,19 @@ class MlxWhisperStt:
         if chosen_lang is not None:
             decode_kwargs["language"] = chosen_lang
 
-        with stage_timer("stt", log_path=self._config.logging.latency_log_file) as rec:
-            start = time.perf_counter()
-            raw: dict[str, Any] = mlx_whisper.transcribe(audio_input, **decode_kwargs)
-            elapsed_ms = (time.perf_counter() - start) * 1000.0
-            rec["model"] = resolved_model.name
-            rec["language"] = raw.get("language") or chosen_lang
+        def _execute() -> tuple[float, dict[str, Any], float]:
+            load_ms_local = self._load_on_mlx_thread(resolved_model)
+            import mlx_whisper
+
+            with stage_timer("stt", log_path=self._config.logging.latency_log_file) as rec:
+                start = time.perf_counter()
+                raw_local: dict[str, Any] = mlx_whisper.transcribe(audio_input, **decode_kwargs)
+                elapsed_local = (time.perf_counter() - start) * 1000.0
+                rec["model"] = resolved_model.name
+                rec["language"] = raw_local.get("language") or chosen_lang
+            return load_ms_local, raw_local, elapsed_local
+
+        load_ms, raw, elapsed_ms = _MLX_EXECUTOR.run(_execute)
 
         processing_ms = round(elapsed_ms, 2)
         rtf = compute_rtf(processing_ms, audio_duration_s)

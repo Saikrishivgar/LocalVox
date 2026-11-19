@@ -3,6 +3,7 @@
 import copy
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -324,6 +325,68 @@ def test_stt_mocked_transcription(tmp_path: Path) -> None:
     assert result.audio_duration_s == 1.0
     assert result.rtf is not None
     assert (tmp_path / "latency.jsonl").exists()
+
+
+def test_stt_pins_load_and_transcribe_to_single_mlx_thread(tmp_path: Path) -> None:
+    """Ensure load() and transcribe_array() share one MLX GPU thread across caller threads."""
+    model_dir = tmp_path / "whisper_model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "weights.safetensors").write_bytes(b"weights")
+
+    cfg = _make_isolated_config(tmp_path)
+    cfg.stt.local_model_path = model_dir
+    stt = MlxWhisperStt(cfg)
+
+    seen_threads: list[tuple[int, str]] = []
+    fake_holder = SimpleNamespace(model=None, model_path=None)
+
+    def fake_load(resolved: Path, _dtype: object) -> object:
+        curr = threading.current_thread()
+        seen_threads.append((curr.ident or 0, curr.name))
+        fake_holder.model = object()
+        fake_holder.model_path = str(resolved)
+        return fake_holder.model
+
+    def fake_transcribe(_audio: object, **_kwargs: object) -> dict[str, object]:
+        curr = threading.current_thread()
+        seen_threads.append((curr.ident or 0, curr.name))
+        return {"text": "Ready", "language": "en", "segments": []}
+
+    fake_modules = {
+        "mlx": SimpleNamespace(core=SimpleNamespace(float16="float16")),
+        "mlx.core": SimpleNamespace(float16="float16"),
+        "mlx_whisper": SimpleNamespace(transcribe=fake_transcribe),
+        "mlx_whisper.transcribe": SimpleNamespace(ModelHolder=fake_holder),
+    }
+
+    caller_ids: list[int] = []
+    audio = np.zeros(16000, dtype=np.float32)
+
+    with (
+        patch.dict(sys.modules, fake_modules),
+        patch("backend.stt.whisper_stt._load_whisper_into_holder", side_effect=fake_load),
+    ):
+        def loader() -> None:
+            caller_ids.append(threading.get_ident())
+            stt.load()
+
+        # Load on a short-lived worker thread that exits before transcription.
+        t1 = threading.Thread(target=loader)
+        t1.start()
+        t1.join()
+
+        # Transcribe from a different thread (main thread) after loader exited.
+        caller_ids.append(threading.get_ident())
+        res = stt.transcribe_array(audio, 16000, language="en")
+        assert res.text == "Ready"
+
+    assert len(caller_ids) == 2
+    assert caller_ids[0] != caller_ids[1]
+    assert len(seen_threads) == 2
+    assert seen_threads[0] == seen_threads[1]
+    assert seen_threads[0][1] == "mlx-gpu-worker"
+    assert seen_threads[0][0] not in caller_ids
 
 
 def test_tts_mocked_synthesis(tmp_path: Path) -> None:
